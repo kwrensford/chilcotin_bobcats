@@ -23,6 +23,8 @@ library(geodata)
 library(viridis)
 library(scales)
 library(colorspace)
+library(spOccupancy)
+library(ClimateNAr)
 
 #Read in camera detections
 all_detections <-read.csv("~/chilcotin_bobcats/data/kwasi.bobcats.etc.csv")
@@ -31,13 +33,6 @@ all_detections <-read.csv("~/chilcotin_bobcats/data/kwasi.bobcats.etc.csv")
 site_covars <- read.csv("~/chilcotin_bobcats/data/env.vars.2021.csv")
 
 #Read in camera deployment data
-
-library(readr)
-library(dplyr)
-library(tidyr)
-library(stringr)
-library(lubridate)
-library(camtrapR)
 
 build_multiseason_camop_with_problems <- function(files) {
   
@@ -111,24 +106,23 @@ build_multiseason_camop_with_problems <- function(files) {
   print(head(all_intervals))
   message("---- END DIAGNOSTIC ----")
   
-  # ---- Try to normalize names ----
+  # ---- Normalize names ----
   all_intervals <- all_intervals %>%
     rename(
       Camera = any_of(c("Camera", "camera", "Camera.x", "Station")),
       Year   = any_of(c("Year", "year", "Session"))
     )
   
-  message("Columns in CTtable AFTER renaming:")
-  print(names(all_intervals))
-  message("First few rows AFTER renaming:")
-  print(head(all_intervals))
-  message("---- END DIAGNOSTIC ----")
+  # ---- Fix problem column names ----
+  all_intervals <- all_intervals %>%
+    rename_with(~ gsub("Problem([0-9]+)_Problem_from", "Problem\\1_from", .x)) %>%
+    rename_with(~ gsub("Problem([0-9]+)_Problem_to",   "Problem\\1_to",   .x))
   
-  # ---- Now call cameraOperation ----
+  # ---- Build multiseason camOp ----
   camop <- cameraOperation(
     CTtable      = all_intervals,
     stationCol   = "Camera",
-    cameraCol    = "Camera",        # <-- REQUIRED
+    cameraCol    = "Camera",
     setupCol     = "SetupDate",
     retrievalCol = "RetrievalDate",
     sessionCol   = "Year",
@@ -137,6 +131,7 @@ build_multiseason_camop_with_problems <- function(files) {
     dateFormat   = "%Y-%m-%d",
     writecsv     = FALSE
   )
+  
   
   return(list(
     CTtable = all_intervals,
@@ -148,15 +143,16 @@ build_multiseason_camop_with_problems <- function(files) {
 files <- list.files("~/chilcotin_bobcats/data/deployment_data", pattern = "csv$", full.names = TRUE)
 multi <- build_multiseason_camop_with_problems(files)
 
-
-deploy_list <- lapply(files, read_deployment_csv)
-
-all_intervals <- bind_rows(lapply(deploy_list, `[[`, "intervals"))
-
-#Format deployment tables into long format
-
 #Format date/time
 all_detections$date.time <- parse_date_time(all_detections$date.time, "ymd HMS", tz = "Canada/Pacific")
+
+all_detections <- all_detections %>%
+  mutate(
+    date.time = parse_date_time(date.time, orders = c("ymd HMS", "ymd HM", "ymd H"))
+  )
+
+all_detections <- all_detections %>% filter(!is.na(date.time))
+
 
 #Join LatLong and Elevation to detections
 all_detections$site <- all_detections$station
@@ -164,53 +160,252 @@ all_detections$site <- all_detections$station
 all_detections <- all_detections %>%
   left_join(site_covars, by = "site")
 
-#Explore naive occupancy per species
+##Detection histories
 
-##Bobcats
-bobcat_site_occ <- all_detections %>%
-  group_by(location, longitude, latitude)%>%
-  summarise(coyotedetection = as.integer(any(species_common_name == "Coyote")))
+build_multiseason_detection_history_camtrapR <- function(detections, camop) {
+  
+  # ---- Normalize station names to match camOp rownames ----
+  normalize_station <- function(x) {
+    x <- sub("_2$", "", x)      # remove _2 suffix
+    x <- sub("off$", "", x)     # remove off suffix
+    x <- sub("err$", "", x)     # remove err suffix
+    x
+  }
+  
+  detections <- detections %>%
+    mutate(
+      date.time = as.POSIXct(date.time),
+      station_clean = normalize_station(station)
+    )
+  
+  species_list <- sort(unique(detections$species))
+  seasons <- names(camop)
+  
+  out <- list()
+  
+  for (sp in species_list) {
+    
+    sp_list <- list()
+    
+    for (ss in seasons) {
+      
+      camop_ss <- camop[[ss]]
+      
+      # Filter detections for this species × season
+      det_ss <- detections %>%
+        filter(species == sp, year == as.integer(ss)) %>%
+        filter(!is.na(date.time))   # <-- NEW: drop NA timestamps
+      
+      
+      # Normalize station names in this subset
+      det_ss$station_clean <- normalize_station(det_ss$station)
+      
+      # ---- Check for station mismatches ----
+      missing <- setdiff(det_ss$station_clean, rownames(camop_ss))
+      if (length(missing) > 0) {
+        message("WARNING: Season ", ss, " | Species ", sp)
+        message("Stations in detections but NOT in camOp: ", paste(missing, collapse=", "))
+        
+        # Drop unmatched stations (camtrapR cannot use them)
+        det_ss <- det_ss %>% filter(!station_clean %in% missing)
+      }
+      
+      # If no detections remain, return an all-zero matrix
+      if (nrow(det_ss) == 0) {
+        sp_list[[ss]] <- matrix(
+          0,
+          nrow = nrow(camop_ss),
+          ncol = ncol(camop_ss),
+          dimnames = dimnames(camop_ss)
+        )
+        next
+      }
+      
+      # ---- Build detection history using camtrapR ----
+      dh <- detectionHistory(
+        recordTable = det_ss,
+        species = sp,                      # REQUIRED in your version
+        camOp = camop_ss,
+        stationCol = "station_clean",
+        speciesCol = "species",
+        recordDateTimeCol = "date.time",
+        occasionLength = 1,
+        day1 = "station",
+        includeEffort = FALSE
+      )
+      
+      sp_list[[ss]] <- dh$detection_history
+    }
+    
+    out[[sp]] <- sp_list
+  }
+  
+  return(out)
+}
 
-naive_occ_coyote <- mean(coyote_site_occ$coyotedetection)
 
-##Relationship between detections and covariates.
 
-#Camera Operation Matrices
-camops <- lapply(deploy_list, function(x) {
-  cameraOperation(
-    CTtable = deploy_intervals,
-    stationCol = "Camera",
-    setupCol = "SetupDate",
-    retrievalCol = "RetrievalDate",
-    sessionCol = "Year",     # <-- NEW
-    cameraCol = "Camera",    # <-- REQUIRED when multiple rows per camera
-    dateFormat = "%Y-%m-%d"
+##SP Occupancy
+
+
+convert_to_spoccupancy_array <- function(det_list) {
+  
+  seasons <- names(det_list)
+  n_years <- length(seasons)
+  
+  # ---- 1. Determine full station set ----
+  all_stations <- Reduce(union, lapply(det_list, rownames))
+  
+  # ---- 2. Determine full occasion set (days) ----
+  all_occasions <- Reduce(union, lapply(det_list, colnames))
+  
+  # ---- 3. Pad each season matrix to full dimensions ----
+  padded <- lapply(det_list, function(mat) {
+    
+    # Create full matrix
+    full <- matrix(
+      0,
+      nrow = length(all_stations),
+      ncol = length(all_occasions),
+      dimnames = list(all_stations, all_occasions)
+    )
+    
+    # Insert existing data
+    full[rownames(mat), colnames(mat)] <- mat
+    
+    return(full)
+  })
+  
+  # ---- 4. Build 3D array ----
+  y <- array(
+    NA,
+    dim = c(length(all_stations), length(all_occasions), n_years),
+    dimnames = list(all_stations, all_occasions, seasons)
   )
-})
+  
+  for (i in seq_along(seasons)) {
+    y[,,i] <- padded[[ seasons[i] ]]
+  }
+  
+  return(y)
+}
+
+convert_to_spoccupancy_array <- function(det_list) {
+  
+  seasons <- names(det_list)
+  n_years <- length(seasons)
+  
+  # ---- 1. Determine full station set ----
+  all_stations <- Reduce(union, lapply(det_list, rownames))
+  
+  # ---- 2. Determine full occasion set (days) ----
+  all_occasions <- Reduce(union, lapply(det_list, colnames))
+  
+  # ---- 3. Pad each season matrix to full dimensions ----
+  padded <- lapply(det_list, function(mat) {
+    
+    # Create full matrix
+    full <- matrix(
+      0,
+      nrow = length(all_stations),
+      ncol = length(all_occasions),
+      dimnames = list(all_stations, all_occasions)
+    )
+    
+    # Insert existing data
+    full[rownames(mat), colnames(mat)] <- mat
+    
+    return(full)
+  })
+  
+  # ---- 4. Build 3D array ----
+  y <- array(
+    NA,
+    dim = c(length(all_stations), length(all_occasions), n_years),
+    dimnames = list(all_stations, all_occasions, seasons)
+  )
+  
+  for (i in seq_along(seasons)) {
+    y[,,i] <- padded[[ seasons[i] ]]
+  }
+  
+  return(y)
+}
+
+all_arrays <- build_all_detection_arrays(detHist)
+
+##SPOccupancyt Detection Array
+
+convert_to_spoccupancy_array <- function(det_list) {
+  
+  seasons <- names(det_list)
+  n_years <- length(seasons)
+  
+  # ---- 1. Determine full station set ----
+  all_stations <- Reduce(union, lapply(det_list, rownames))
+  
+  # ---- 2. Determine full occasion set (days) ----
+  all_occasions <- Reduce(union, lapply(det_list, colnames))
+  
+  # ---- 3. Pad each season matrix to full dimensions ----
+  padded <- lapply(det_list, function(mat) {
+    
+    # Create full matrix
+    full <- matrix(
+      0,
+      nrow = length(all_stations),
+      ncol = length(all_occasions),
+      dimnames = list(all_stations, all_occasions)
+    )
+    
+    # Insert existing data
+    full[rownames(mat), colnames(mat)] <- mat
+    
+    return(full)
+  })
+  
+  # ---- 4. Build 3D array ----
+  y <- array(
+    NA,
+    dim = c(length(all_stations), length(all_occasions), n_years),
+    dimnames = list(all_stations, all_occasions, seasons)
+  )
+  
+  for (i in seq_along(seasons)) {
+    y[,,i] <- padded[[ seasons[i] ]]
+  }
+  
+  return(y)
+}
+
+#Align covariates with detection array
+normalize_station <- function(x) {
+  x <- sub("_2$", "", x)
+  x <- sub("off$", "", x)
+  x <- sub("err$", "", x)
+  x
+}
+
+site_covs <- site_covariates_raw %>%
+  mutate(station = normalize_station(station)) %>%   # same normalizer as detections
+  filter(station %in% stations) %>%
+  distinct(station, .keep_all = TRUE) %>%
+  right_join(
+    tibble(station = stations),
+    by = "station"
+  ) %>%
+  arrange(match(station, stations))
 
 
-bobcat_counts_annual <- bobcats %>%
-  count(year)
+site_covs <- site_covs %>% column_to_rownames("station")
 
-bobcat_counts_station <- bobcats %>%
-  count(station)
+##Diel activity
 
-ggplot(bobcat_counts_annual, aes(x = year, y = n)) +
-  geom_col(fill = "steelblue") +
-  labs(x = "Year",
-       y = "Number of detections",
-       title = "Detections per year") +
-  theme_minimal()
-
-
-
-bobcat_year_station <- bobcats %>%
-  count(year, station)
-
-ggplot(bobcat_year_station, aes(x = year, y = n, fill = station)) +
-  geom_col(position = "stack") +
-  labs(x = "Year",
-       y = "Number of detections",
-       fill = "Station",
-       title = "Detections per year by station") +
-  theme_minimal()
+activityDensity(
+  recordTable = all_detections,
+  species = "red squirrel",
+  speciesCol = "species",
+  recordDateTimeCol = "date.time",
+  recordDateTimeFormat = "ymd HMS",
+  writePNG = FALSE
+)
