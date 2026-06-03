@@ -25,6 +25,8 @@ library(scales)
 library(colorspace)
 library(spOccupancy)
 library(ClimateNAr)
+library(ubms)
+library(data.table)
 
 #Read in camera detections
 all_detections <-read.csv("~/chilcotin_bobcats/data/kwasi.bobcats.etc.csv")
@@ -143,6 +145,39 @@ build_multiseason_camop_with_problems <- function(files) {
 files <- list.files("~/chilcotin_bobcats/data/deployment_data", pattern = "csv$", full.names = TRUE)
 multi <- build_multiseason_camop_with_problems(files)
 
+##Splitting camop tables into stacked array
+split_camop_by_year <- function(camop_matrix) {
+  
+  # Extract year from rownames
+  row_years <- sub(".*__SESS_([0-9]{4})__.*", "\\1", rownames(camop_matrix))
+  
+  # Extract year from column names (YYYY-MM-DD)
+  col_years <- substr(colnames(camop_matrix), 1, 4)
+  
+  years <- sort(unique(row_years))
+  
+  out <- list()
+  
+  for (yr in years) {
+    
+    row_idx <- which(row_years == yr)
+    col_idx <- which(col_years == yr)
+    
+    m <- camop_matrix[row_idx, col_idx, drop = FALSE]
+    m <- as.matrix(m)
+    
+    # Clean rownames
+    station <- sub("__.*$", "", rownames(m))
+    rownames(m) <- station
+    
+    out[[yr]] <- m
+  }
+  
+  return(out)
+}
+
+clean_camop <- split_camop_by_year(multi$camop)
+
 #Format date/time
 all_detections$date.time <- parse_date_time(all_detections$date.time, "ymd HMS", tz = "Canada/Pacific")
 
@@ -155,10 +190,14 @@ all_detections <- all_detections %>% filter(!is.na(date.time))
 
 
 #Join LatLong and Elevation to detections
-all_detections$site <- all_detections$station
+
+##Rename sites to station in covars
+
+site_covars <- site_covars %>%
+  rename(station = site)
 
 all_detections <- all_detections %>%
-  left_join(site_covars, by = "site")
+  left_join(site_covars, by = "station")
 
 ##Detection histories
 
@@ -229,9 +268,10 @@ build_multiseason_detection_history_camtrapR <- function(detections, camop) {
         stationCol = "station_clean",
         speciesCol = "species",
         recordDateTimeCol = "date.time",
-        occasionLength = 1,
+        occasionLength = 7,
         day1 = "station",
-        includeEffort = FALSE
+        includeEffort = FALSE,
+        timeZone = "America/Vancouver"
       )
       
       sp_list[[ss]] <- dh$detection_history
@@ -243,51 +283,19 @@ build_multiseason_detection_history_camtrapR <- function(detections, camop) {
   return(out)
 }
 
-
+detHist <- build_multiseason_detection_history_camtrapR(
+  detections = all_detections,
+  camop = clean_camop
+)
 
 ##SP Occupancy
 
-
-convert_to_spoccupancy_array <- function(det_list) {
-  
-  seasons <- names(det_list)
-  n_years <- length(seasons)
-  
-  # ---- 1. Determine full station set ----
-  all_stations <- Reduce(union, lapply(det_list, rownames))
-  
-  # ---- 2. Determine full occasion set (days) ----
-  all_occasions <- Reduce(union, lapply(det_list, colnames))
-  
-  # ---- 3. Pad each season matrix to full dimensions ----
-  padded <- lapply(det_list, function(mat) {
-    
-    # Create full matrix
-    full <- matrix(
-      0,
-      nrow = length(all_stations),
-      ncol = length(all_occasions),
-      dimnames = list(all_stations, all_occasions)
-    )
-    
-    # Insert existing data
-    full[rownames(mat), colnames(mat)] <- mat
-    
-    return(full)
-  })
-  
-  # ---- 4. Build 3D array ----
-  y <- array(
-    NA,
-    dim = c(length(all_stations), length(all_occasions), n_years),
-    dimnames = list(all_stations, all_occasions, seasons)
-  )
-  
-  for (i in seq_along(seasons)) {
-    y[,,i] <- padded[[ seasons[i] ]]
-  }
-  
-  return(y)
+##Normalize station names
+normalize_station <- function(x) {
+  x <- sub("_2$", "", x)
+  x <- sub("off$", "", x)
+  x <- sub("err$", "", x)
+  x
 }
 
 convert_to_spoccupancy_array <- function(det_list) {
@@ -331,6 +339,8 @@ convert_to_spoccupancy_array <- function(det_list) {
   
   return(y)
 }
+
+
 
 all_arrays <- build_all_detection_arrays(detHist)
 
@@ -386,7 +396,7 @@ normalize_station <- function(x) {
   x
 }
 
-site_covs <- site_covariates_raw %>%
+site_covs <- site_covars %>%
   mutate(station = normalize_station(station)) %>%   # same normalizer as detections
   filter(station %in% stations) %>%
   distinct(station, .keep_all = TRUE) %>%
@@ -403,9 +413,52 @@ site_covs <- site_covs %>% column_to_rownames("station")
 
 activityDensity(
   recordTable = all_detections,
-  species = "red squirrel",
+  species = "snowshoe hare",
   speciesCol = "species",
   recordDateTimeCol = "date.time",
   recordDateTimeFormat = "ymd HMS",
   writePNG = FALSE
 )
+
+activityOverlap(recordTable = all_detections,
+                speciesCol = "species",
+                speciesA = "canada lynx",
+                speciesB = "bobcat",
+                recordDateTimeCol = "date.time",
+                recordDateTimeFormat = "ymd HMS",
+                writePNG = FALSE)
+
+#Climate NA data
+climate_years <- c("Year_2018.ann",
+                   "Year_2019.ann", 
+                   "Year_2020.ann", 
+                   "Year_2021.ann", 
+                   "Year_2022.ann",
+                   "Year_2023.ann",
+                   "Year_2024.ann",
+                   "Year_2025.ann")
+
+##To downloard: Apply across all years (Important, Climate NA only allows 5 calls per hour, so may need to break up into batches)
+climate_list <- lapply(climate_years, function(yr){
+  ClimateNA_API2(
+    ClimateBC_NA = "BC",
+    inputFile = "~/chilcotin_bobcats/data/climatena_coords.csv",
+    period = yr,
+    MSY = "SY"
+  )
+})
+#When downloaded, move into a single folder within your data folder called "climate_data"
+
+#If already downloaded, load in from data folder
+climate_files <- list.files("~/chilcotin_bobcats/data/climate_data", pattern = "csv$", full.names = TRUE)
+
+climate_covars <- lapply(climate_files, read.csv)
+
+names(climate_covars) <- c("climatecovars_2018",
+                           "climatecovars_2019",
+                           "climatecovars_2020",
+                           "climatecovars_2021",
+                           "climatecovars_2022",
+                           "climatecovars_2023",
+                           "climatecovars_2024",
+                           "climatecovars_2025")
