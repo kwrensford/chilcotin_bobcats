@@ -288,61 +288,6 @@ detHist <- build_multiseason_detection_history_camtrapR(
   camop = clean_camop
 )
 
-##SP Occupancy
-
-##Normalize station names
-normalize_station <- function(x) {
-  x <- sub("_2$", "", x)
-  x <- sub("off$", "", x)
-  x <- sub("err$", "", x)
-  x
-}
-
-convert_to_spoccupancy_array <- function(det_list) {
-  
-  seasons <- names(det_list)
-  n_years <- length(seasons)
-  
-  # ---- 1. Determine full station set ----
-  all_stations <- Reduce(union, lapply(det_list, rownames))
-  
-  # ---- 2. Determine full occasion set (days) ----
-  all_occasions <- Reduce(union, lapply(det_list, colnames))
-  
-  # ---- 3. Pad each season matrix to full dimensions ----
-  padded <- lapply(det_list, function(mat) {
-    
-    # Create full matrix
-    full <- matrix(
-      0,
-      nrow = length(all_stations),
-      ncol = length(all_occasions),
-      dimnames = list(all_stations, all_occasions)
-    )
-    
-    # Insert existing data
-    full[rownames(mat), colnames(mat)] <- mat
-    
-    return(full)
-  })
-  
-  # ---- 4. Build 3D array ----
-  y <- array(
-    NA,
-    dim = c(length(all_stations), length(all_occasions), n_years),
-    dimnames = list(all_stations, all_occasions, seasons)
-  )
-  
-  for (i in seq_along(seasons)) {
-    y[,,i] <- padded[[ seasons[i] ]]
-  }
-  
-  return(y)
-}
-
-
-
-all_arrays <- build_all_detection_arrays(detHist)
 
 ##SPOccupancyt Detection Array
 

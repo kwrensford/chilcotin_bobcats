@@ -28,6 +28,7 @@ library(ClimateNAr)
 library(ubms)
 library(data.table)
 library(purrr)
+library(ISOweek)
 
 
 #Read in camera detections
@@ -70,6 +71,8 @@ names(climate_covars) <- c("climatecovars_2018",
                            "climatecovars_2023",
                            "climatecovars_2024",
                            "climatecovars_2025")
+
+
 ##Format Climate into long format with column for year
 
 climate_panel <- climate_covars %>%
@@ -80,6 +83,20 @@ climate_panel <- climate_covars %>%
          )) %>%
   bind_rows()
 
+snow_plot <- ggplot(climate_panel, aes(x = year, y = PAS, color = station))+
+  geom_point()
+  
+
+snow_plot
+
+##Compare climatic covariates vs site covariates
+climate_site_covars <- climate_panel %>%
+  left_join(site_covars, by = "station")
+
+##Elevation x Snow
+ggplot(climate_site_covars, aes(x = year, y = PAS, color = elev))+
+  geom_point()+
+  scale_color_viridis_c()
 
 ##Format detections into weekly
 det_weekly <- all_detections %>%
@@ -122,13 +139,25 @@ ggplot(bobcat, aes(x = PAS_wt, y = detections, color = factor(year))) +
   geom_smooth(method = "loess", se = FALSE) +
   theme_bw()
 
+##Snowshoe hare over time
+det_weekly <- det_weekly %>%
+  mutate(
+    iso_week = sprintf("%d-W%02d-1", year, week),   # Monday of each ISO week
+    date = ISOweek2date(iso_week)
+  )
+
+
+ggplot(det_weekly, aes(x = date, y = detections))+
+  geom_point()+
+  geom_line()
+
 ##Annual mean detection rate with snowpack
 
 bobcat_year <- bobcat %>%
   group_by(year) %>%
   summarise(
     mean_det = mean(detections),
-    snow = mean(PAS_wt)
+    snow = mean(PAS)
   )
 
 ggplot(bobcat_year, aes(x = snow, y = mean_det)) +
@@ -143,3 +172,22 @@ ggplot(bobcat, aes(x = week, y = detections, color = factor(year))) +
   facet_wrap(~ snow_bin) +
   theme_bw()
 
+lynx<-det_weekly %>%
+  filter(species == "canada lynx")
+
+ggplot(lynx, aes(x = PAS_wt, y = detections, color = factor(year))) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", se = FALSE) +
+  theme_bw()
+
+lynx_year <- lynx %>%
+  group_by(year) %>%
+  summarise(
+    mean_det = mean(detections),
+    snow = mean(PAS_wt)
+  )
+
+ggplot(lynx_year, aes(x = snow, y = mean_det)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw()
