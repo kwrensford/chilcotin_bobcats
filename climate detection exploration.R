@@ -134,7 +134,7 @@ ggplot(elev_q, aes(x = year, y = q50, color = species)) +
 bobcat <- det_weekly %>%
   filter(species == "bobcat")
 
-ggplot(bobcat, aes(x = PAS_wt, y = detections, color = factor(year))) +
+ggplot(bobcat, aes(x = PAS, y = detections, color = factor(year))) +
   geom_point(alpha = 0.4) +
   geom_smooth(method = "loess", se = FALSE) +
   theme_bw()
@@ -175,7 +175,7 @@ ggplot(bobcat, aes(x = week, y = detections, color = factor(year))) +
 lynx<-det_weekly %>%
   filter(species == "canada lynx")
 
-ggplot(lynx, aes(x = PAS_wt, y = detections, color = factor(year))) +
+ggplot(lynx, aes(x = PAS, y = detections, color = factor(year))) +
   geom_point(alpha = 0.4) +
   geom_smooth(method = "loess", se = FALSE) +
   theme_bw()

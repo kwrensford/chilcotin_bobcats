@@ -288,71 +288,18 @@ detHist <- build_multiseason_detection_history_camtrapR(
   camop = clean_camop
 )
 
+#Save detection matrices as csv's
 
-##SPOccupancyt Detection Array
-
-convert_to_spoccupancy_array <- function(det_list) {
-  
-  seasons <- names(det_list)
-  n_years <- length(seasons)
-  
-  # ---- 1. Determine full station set ----
-  all_stations <- Reduce(union, lapply(det_list, rownames))
-  
-  # ---- 2. Determine full occasion set (days) ----
-  all_occasions <- Reduce(union, lapply(det_list, colnames))
-  
-  # ---- 3. Pad each season matrix to full dimensions ----
-  padded <- lapply(det_list, function(mat) {
+iwalk(detHist, function(year_list, species) {
+  iwalk(year_list, function(mat, yr) {
     
-    # Create full matrix
-    full <- matrix(
-      0,
-      nrow = length(all_stations),
-      ncol = length(all_occasions),
-      dimnames = list(all_stations, all_occasions)
-    )
+    # build path: data/species_year.csv
+    out_path <- file.path("data", paste0(species, "_", yr, ".csv"))
     
-    # Insert existing data
-    full[rownames(mat), colnames(mat)] <- mat
-    
-    return(full)
+    write.csv(mat, out_path, row.names = FALSE)
   })
-  
-  # ---- 4. Build 3D array ----
-  y <- array(
-    NA,
-    dim = c(length(all_stations), length(all_occasions), n_years),
-    dimnames = list(all_stations, all_occasions, seasons)
-  )
-  
-  for (i in seq_along(seasons)) {
-    y[,,i] <- padded[[ seasons[i] ]]
-  }
-  
-  return(y)
-}
+})
 
-#Align covariates with detection array
-normalize_station <- function(x) {
-  x <- sub("_2$", "", x)
-  x <- sub("off$", "", x)
-  x <- sub("err$", "", x)
-  x
-}
-
-site_covs <- site_covars %>%
-  mutate(station = normalize_station(station)) %>%   # same normalizer as detections
-  filter(station %in% stations) %>%
-  distinct(station, .keep_all = TRUE) %>%
-  right_join(
-    tibble(station = stations),
-    by = "station"
-  ) %>%
-  arrange(match(station, stations))
-
-
-site_covs <- site_covs %>% column_to_rownames("station")
 
 ##Diel activity
 
