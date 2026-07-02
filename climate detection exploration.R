@@ -29,7 +29,8 @@ library(ubms)
 library(data.table)
 library(purrr)
 library(ISOweek)
-
+library(ggspatial)
+library(maptiles)
 
 #Read in camera detections
 all_detections <-read.csv("~/chilcotin_bobcats/data/kwasi.bobcats.etc.csv")
@@ -57,6 +58,98 @@ site_covars <- site_covars %>%
 
 all_detections <- all_detections %>%
   left_join(site_covars, by = "station")
+
+#Visualize detections per year
+
+species_year_counts <- all_detections %>%
+  group_by(species, year) %>% 
+  summarise(n_detections = n(), .groups = "drop")
+
+species_year_counts <- species_year_counts %>%
+  mutate(year = factor(year, levels = 2017:2025))%>%
+  filter(!is.na(year))
+
+ggplot(species_year_counts, aes(x = year, y = n_detections, fill = species)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ species, scales = "free_y") +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Detections per Species per Year",
+    x = "Year",
+    y = "Number of Detections"
+  )
+
+
+#Overlap between stations
+
+stations_sf <- site_covars %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# Summaries per species × station
+sp_station <- all_detections %>%
+  group_by(species, station) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  left_join(stations_sf, by = "station")
+
+sp_pair <- sp_station %>% filter(species %in% c("bobcat", "lynx"))
+
+ggplot(sp_pair) +
+  geom_sf(aes(color = species, size = n), alpha = 0.7) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Spatial Overlap: Bobcat & Lynx",
+       color = "Species", size = "Detections")
+
+#Map detection of species per site
+
+##Convert to sf objects
+sites_sf <- site_covars %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+
+det_summary <- all_detections %>%
+  group_by(station, species) %>%
+  summarise(n = n(), .groups = "drop")
+
+sites_det <- sites_sf %>%
+  left_join(det_summary, by = "station")
+
+species_to_plot <- "bobcat"
+
+ggplot() +
+  geom_sf(data = sites_sf, color = "grey70") +
+  geom_sf(data = filter(sites_det, species == species_to_plot),
+          aes(size = n, color = n)) +
+  scale_color_viridis_c() +
+  labs(title = paste("Detections of", species_to_plot),
+       size = "Number of detections",
+       color = "Number of detections")
+
+
+# get bounding box of your camera sites
+bb <- st_bbox(sites_sf)
+
+# download OSM tiles
+osm_tiles <- get_tiles(bb, provider = "OpenStreetMap", zoom = 10)
+
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 2, color = "black") +
+  geom_sf(data = filter(sites_det, species == "bobcat"),
+          aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  labs(title = "Bobcat detections with OSM basemap")
+
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 2, color = "black") +
+  geom_sf(data = filter(sites_det, species == "canada lynx"),
+          aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  labs(title = "Lynx detections with OSM basemap")
+
+
 
 #Load in climate data
 climate_files <- list.files("~/chilcotin_bobcats/data/climate_data", pattern = "csv$", full.names = TRUE)
@@ -95,6 +188,16 @@ climate_site_covars <- climate_panel %>%
 
 ##Elevation x Snow
 ggplot(climate_site_covars, aes(x = year, y = PAS, color = elev))+
+  geom_point()+
+  scale_color_viridis_c()
+
+##Elevation x Winter Temp
+ggplot(climate_site_covars, aes(x = year, y = MCMT, color = elev))+
+  geom_point()+
+  scale_color_viridis_c()
+
+##Elevation x Summer Temp
+ggplot(climate_site_covars, aes(x = year, y = MWMT, color = elev))+
   geom_point()+
   scale_color_viridis_c()
 
@@ -157,13 +260,20 @@ bobcat_year <- bobcat %>%
   group_by(year) %>%
   summarise(
     mean_det = mean(detections),
-    snow = mean(PAS)
+    snow = mean(PAS),
+    temp = mean(MCMT)
   )
 
 ggplot(bobcat_year, aes(x = snow, y = mean_det)) +
   geom_point(size = 3) +
   geom_smooth(method = "lm", se = FALSE) +
   theme_bw()
+
+ggplot(bobcat_year, aes(x = temp, y = mean_det)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw()
+
 
 bobcat_year$snow_bin <- cut(bobcat_year$snow, breaks = 3)
 
@@ -184,7 +294,8 @@ lynx_year <- lynx %>%
   group_by(year) %>%
   summarise(
     mean_det = mean(detections),
-    snow = mean(PAS_wt)
+    snow = mean(PAS),
+    temp = mean(MCMT)
   )
 
 ggplot(lynx_year, aes(x = snow, y = mean_det)) +
