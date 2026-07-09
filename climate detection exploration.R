@@ -39,14 +39,12 @@ all_detections <-read.csv("~/chilcotin_bobcats/data/kwasi.bobcats.etc.csv")
 site_covars <- read.csv("~/chilcotin_bobcats/data/env.vars.2021.csv")
 
 #Format date/time
-all_detections$date.time <- parse_date_time(all_detections$date.time, "ymd HMS", tz = "Canada/Pacific")
 
-all_detections <- all_detections %>%
-  mutate(
-    date.time = parse_date_time(date.time, orders = c("ymd HMS", "ymd HM", "ymd H"))
-  )
-
-all_detections <- all_detections %>% filter(!is.na(date.time))
+all_detections$date.time <- parse_date_time(
+  all_detections$date.time,
+  orders = c("mdy HMS", "mdy HM", "mdy"),
+  tz = "Canada/Pacific"
+)
 
 
 #Join LatLong and Elevation to detections
@@ -149,7 +147,137 @@ ggplot() +
   coord_sf() +
   labs(title = "Lynx detections with OSM basemap")
 
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 2, color = "black") +
+  geom_sf(data = filter(sites_det, species == "snowshoe hare"),
+          aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  labs(title = "Snowshoe hare detections with OSM basemap")
 
+##Lynx across years
+
+det_year <- all_detections %>%
+  mutate(year = year(date.time))
+
+lynx_yearly <- det_year %>%
+  filter(species == "canada lynx") %>%
+  group_by(station, year) %>%
+  summarise(n = n(), .groups = "drop")
+
+lynx_yearly_sf <- sites_sf %>%
+  left_join(
+    lynx_yearly %>% st_drop_geometry(),
+    by = "station"
+  ) %>%
+  mutate(n = replace_na(n, 0))
+
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 1, color = "grey60") +
+  geom_sf(data = filter(lynx_yearly_sf, year == 2020),
+          aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  labs(title = "Canada Lynx Detections — 2020")
+
+ggplot(lynx_yearly_sf) +
+  layer_spatial(osm_tiles) +
+  geom_sf(aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  facet_wrap(~ year) +
+  labs(title = "Canada Lynx Detections by Year")
+
+#Snowshoe hare across years
+
+hare_yearly <- det_year %>%
+  filter(species == "snowshoe hare") %>%
+  group_by(station, year) %>%
+  summarise(n = n(), .groups = "drop")
+
+hare_yearly_sf <- sites_sf %>%
+  left_join(
+    hare_yearly %>% st_drop_geometry(),
+    by = "station"
+  ) %>%
+  mutate(n = replace_na(n, 0))
+
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 1, color = "grey60") +
+  geom_sf(data = filter(hare_yearly_sf, year == 2020),
+          aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  labs(title = "Snowshoe hare Detections — 2020")
+
+ggplot(hare_yearly_sf) +
+  layer_spatial(osm_tiles) +
+  geom_sf(aes(color = n, size = n)) +
+  scale_color_viridis_c() +
+  coord_sf() +
+  facet_wrap(~ year) +
+  labs(title = "Snowshoe hare Detections by Year")
+
+
+#Overlap between bobcat and lynx
+
+overlap_sf <- sites_sf %>%                     # KEEP geometry here
+  left_join(
+    sites_det %>%
+      st_drop_geometry() %>%                   # drop geometry only from detections
+      filter(species %in% c("bobcat", "canada lynx")) %>%
+      select(station, species, n) %>%
+      tidyr::pivot_wider(
+        names_from = species,
+        values_from = n,
+        values_fill = 0
+      ),
+    by = "station"
+  ) %>%
+  mutate(
+    bobcat = replace_na(bobcat, 0),
+    `canada lynx` = replace_na(`canada lynx`, 0),
+    overlap = case_when(
+      bobcat > 0 & `canada lynx` > 0 ~ "Both",
+      bobcat > 0 ~ "Bobcat only",
+      `canada lynx` > 0 ~ "Lynx only",
+      TRUE ~ "None"
+    )
+  )
+
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 1, color = "grey60") +
+  geom_sf(data = overlap_sf, aes(color = overlap), size = 3) +
+  scale_color_manual(
+    values = c(
+      "Bobcat only" = "#1f78b4",
+      "Lynx only"   = "#33a02c",
+      "Both"        = "#e31a1c",
+      "None"        = "grey80"
+    )
+  ) +
+  coord_sf() +
+  labs(title = "Bobcat–Lynx Overlap at Camera Sites")
+
+
+
+ggplot() +
+  layer_spatial(osm_tiles) +
+  geom_sf(data = sites_sf, size = 1, color = "grey60") +
+  geom_sf(data = overlap_sf, aes(color = overlap), size = 3) +
+  scale_color_manual(
+    values = c(
+      "Bobcat only" = "#1f78b4",
+      "Lynx only"   = "#33a02c",
+      "Both"        = "#e31a1c"
+    )
+  ) +
+  coord_sf() +
+  labs(title = "Bobcat–Lynx Overlap at Camera Sites")
 
 #Load in climate data
 climate_files <- list.files("~/chilcotin_bobcats/data/climate_data", pattern = "csv$", full.names = TRUE)
