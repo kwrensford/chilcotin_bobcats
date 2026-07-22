@@ -59,6 +59,13 @@ all_detections <- all_detections %>%
 
 #Visualize detections per year
 
+detections_per_year <- all_detections %>%
+  count(year)
+
+stations_per_year <- all_detections %>%
+  group_by(year) %>%
+  summarise(n_station = n_distinct(station))
+
 species_year_counts <- all_detections %>%
   group_by(species, year) %>% 
   summarise(n_detections = n(), .groups = "drop")
